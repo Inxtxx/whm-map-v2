@@ -1,0 +1,14 @@
+{
+  "name": "whm-map-v2",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "playwright install --with-deps",
+    "fetch:counts": "node scripts/fetch_counts.mjs",
+    "expand:postcodes": "node scripts/expand_postcodes.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.46.0"
+  }
+}
