@@ -1,0 +1,9 @@
+{
+  "generatedAtUTC": "2025-08-14T00:00:00Z",
+  "sources": ["Workforce Australia"],
+  "perPOA": {
+    "6000": { "count": 0 },
+    "6714": { "count": 0 },
+    "4870": { "count": 0 }
+  }
+}
