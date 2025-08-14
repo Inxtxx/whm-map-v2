@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WHM 462 集签地图 · V2</title>
+  <!-- Leaflet & Esri Leaflet（用于加载 ArcGIS 的 POA 边界） -->
+  <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/esri-leaflet@3.0.11/dist/esri-leaflet.js"></script>
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .legend { position: absolute; bottom: 14px; left: 14px; background: #fff; padding: 10px 12px; border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,.15); font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;}
+    .legend .title { font-weight: 600; margin-bottom: 6px; }
+    .info { position: absolute; top: 14px; left: 14px; background: #fff; padding: 10px 12px; border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,.15); max-width: 320px;}
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef; margin-right:6px; font-size:12px;}
+    .btn { cursor:pointer; border:0; padding:10px 12px; border-radius:6px; background:#0b5fff; color:#fff; font-weight:600; }
+    .btn:disabled { background:#aaa; cursor:not-allowed; }
+    .popup h4{margin:0 0 6px 0}
+    .popup small{color:#666}
+    .note { color:#444; font-size:12px; margin-top:6px;}
+    .footer { position:absolute; right:14px; bottom:14px; background:#fff; padding:8px 10px; border-radius:6px; box-shadow:0 1px 6px rgba(0,0,0,.15); font-size:12px; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="info" id="info">
+  <div style="font-weight:700; margin-bottom:6px;">WHM 462 集签地图 · V2</div>
+  <div class="note">
+    颜色：统一蓝色，<b>近10天</b>官方招聘站（Workforce Australia 等）中适合集签岗位数越多，颜色越深。灰+红虚线＝该邮编区块当前不计入 462 指定工作。
+  </div>
+  <div class="note">数据口径：只使用 <b>462</b> 规定；规则与区域清单来自内政部官方页面。</div>
+</div>
+
+<div class="legend" id="legend">
+  <div class="title">近10天岗位数</div>
+  <div><span class="pill" style="background:#eef">0</span>
+       <span class="pill" style="background:#dbe8ff">1-5</span>
+       <span class="pill" style="background:#b0d1ff">6-20</span>
+       <span class="pill" style="background:#7fb5ff">21-50</span>
+       <span class="pill" style="background:#4d98ff">51-120</span>
+       <span class="pill" style="background:#1f7dff; color:#fff">120+</span>
+  </div>
+</div>
+
+<div class="footer">
+  数据源：Workforce Australia（岗位）、ABS POA 2021（边界） · 仅作信息参考
+</div>
+
+<script>
+const map = L.map('map',{ minZoom:3, maxZoom:12 }).setView([-25.5, 134.5], 4);
+
+// 底图（OpenStreetMap）
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+// --------------------- 工具函数 ---------------------
+const blueScale = (v) => {
+  // v = 岗位数
+  if (v <= 0) return '#eef';
+  if (v <= 5) return '#dbe8ff';
+  if (v <= 20) return '#b0d1ff';
+  if (v <= 50) return '#7fb5ff';
+  if (v <= 120) return '#4d98ff';
+  return '#1f7dff';
+};
+
+const fmtNumber = (n)=> n.toLocaleString('en-AU');
+
+// 全局数据容器
+let ELG = null;   // 462 规则
+let JOBS = null;  // 近10天岗位计数
+let REMOTE_VR = null; // 远程/极远邮编集合（用于旅游酒店判断）
+
+// 读取 462 规则与岗位数据
+Promise.all([
+  fetch('rules/eligibility-462.json').then(r=>r.json()),
+  fetch('data/jobs-last10d.json').then(r=>r.json())
+]).then(([eligibility, jobs])=>{
+  ELG = eligibility;
+  JOBS = jobs;
+  REMOTE_VR = new Set(ELG.definitions.remoteVeryRemoteFlat || []);
+  initPOALayer();
+}).catch(e=>{
+  console.error(e);
+  alert('加载规则或数据失败，请检查 rules/eligibility-462.json 与 data/jobs-last10d.json 是否存在。');
+});
+
+// 判断某 POA 在 462 下是否可集签（返回：{eligible:boolean, industries:string[] }）
+function industriesForPOA(poa){
+  const p = String(poa);
+  const inNorthern = ELG.definitions.northernAustralia.ntAll || ELG.definitions.northernAustralia.postcodes.includes(p);
+  const inRegional = ELG.definitions.regionalAustraliaFlat.includes(p);
+  const inRemoteVR = REMOTE_VR.has(p) || ELG.definitions.tourismExtraPostcodes.includes(p);
+
+  const ok = [];
+  // 旅游酒店：北澳 或 远程/极远（含四个特例邮编）
+  if (inNorthern || inRemoteVR) ok.push('Tourism & Hospitality');
+  // 植物与动物栽培：北澳 或 区域性地区
+  if (inNorthern || inRegional) ok.push('Plant & Animal cultivation');
+  // 建筑：北澳 或 区域性地区
+  if (inNorthern || inRegional) ok.push('Construction');
+  // 渔业珍珠、林业采伐：仅北澳
+  if (inNorthern) ok.push('Fishing & Pearling / Tree farming & felling');
+  // 自然灾害恢复：另行在灾区名单内，这里仅作为提示，不单靠邮编判断
+  // ok.push('Disaster recovery (declared areas only)');
+
+  return { eligible: ok.length>0, industries: ok };
+}
+
+// --------------------- 加载 POA 2021 边界（ArcGIS FeatureServer） ---------------------
+// 使用 Esri Leaflet 直接绘制边界（只请求可见范围，性能好）
+function initPOALayer(){
+  const layerUrl = 'https://services-ap1.arcgis.com/ypkPEy1AmwPKGNNv/arcgis/rest/services/ABS_Socio_Economic_Indexes_for_Areas_SEIFA_by_2021_POA/FeatureServer/0';
+
+  const poaLayer = L.esri.featureLayer({
+    url: layerUrl,
+    simplifyFactor: 0.5,
+    precision: 5,
+    fields: ['poa_code_2021','poa_name_2021'],
+    style: styleByJobs
+  }).addTo(map);
+
+  poaLayer.on('mouseover', function(e){
+    const f = e.layer.feature.properties;
+    const poa = f.poa_code_2021;
+    const nm = f.poa_name_2021;
+    const jobs = (JOBS.perPOA[poa]?.count) || 0;
+    const info = industriesForPOA(poa);
+
+    const html = `
+      <div class="popup">
+        <h4>${nm}（POA ${poa}）</h4>
+        <div><b>近10天适合 462 指定工作的岗位：</b> ${fmtNumber(jobs)} 个</div>
+        <div style="margin:6px 0"><b>${info.eligible ? '可集签行业' : '不可集签（按 462）'}</b>：
+          ${info.industries.length? info.industries.join('，') : '—'}
+        </div>
+        <div>
+          <button class="btn" onclick="openJobs('${poa}')">找到工作</button>
+        </div>
+        <div class="note"><small>仅统计官方招聘站。规则以内政部 462 页面为准。</small></div>
+      </div>`;
+    e.layer.bindPopup(html, {autoPan:true}).openPopup();
+    e.layer.setStyle(hoverStyle(e.layer));
+  });
+
+  poaLayer.on('mouseout', function(e){
+    poaLayer.resetStyle(e.layer);
+  });
+
+  function styleByJobs(feature){
+    const poa = String(feature.properties.poa_code_2021);
+    const n = (JOBS?.perPOA?.[poa]?.count) || 0;
+    const info = ELG ? industriesForPOA(poa) : {eligible:true};
+    const base = {
+      weight: info.eligible ? 0.6 : 1.5,
+      color: info.eligible ? '#1a5fcc' : '#d33',
+      opacity: info.eligible ? 0.8 : 0.9,
+      fillOpacity: info.eligible ? 0.7 : 0.15,
+      fillColor: info.eligible ? blueScale(n) : '#cccccc',
+      dashArray: info.eligible ? null : '6,4'
+    };
+    return base;
+  }
+
+  function hoverStyle(layer){
+    const st = layer.options;
+    return Object.assign({}, st, { weight: st.weight+1, opacity:1, fillOpacity: Math.min(1, (st.fillOpacity||0)+0.15) });
+  }
+}
+
+// --------------------- “找到工作”按钮：打开官方检索 ---------------------
+function openJobs(poa){
+  // Workforce Australia 搜索（无法精确 10 天筛选参数，用“Past fortnight”后在脚本端二次过滤；这里给出用户可见入口）
+  const url = 'https://www.workforceaustralia.gov.au/individuals/jobs/search';
+  window.open(url, '_blank');
+}
+</script>
+</body>
+</html>
